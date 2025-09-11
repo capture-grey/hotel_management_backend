@@ -6,13 +6,13 @@ const Booking = require("../models/Booking");
 const createBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
-    const { roomId, guestName, nights, checkInDate } = req.body;
+    const { roomId, guestName, nights } = req.body;
 
-    if (!roomId || !guestName || !nights || !checkInDate) {
+    if (!roomId || !guestName || !nights) {
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: "Room ID, guest name, nights, and check-in date are required",
+        message: "Room ID, guest name, and nights are required",
       });
     }
 
@@ -32,17 +32,10 @@ const createBooking = async (req, res, next) => {
       });
     }
 
-    const checkIn = new Date(checkInDate);
+    // Always set check-in date to today
     const today = new Date();
     today.setHours(0, 0, 0, 0); // ignore time
-
-    if (checkIn < today) {
-      session.endSession();
-      return res.status(400).json({
-        success: false,
-        message: "Check-in date cannot be in the past",
-      });
-    }
+    const checkIn = today;
 
     await session.startTransaction();
 
@@ -190,7 +183,7 @@ const updateBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const { id } = req.params;
-    const { guestName, nights, checkInDate } = req.body;
+    const { guestName, nights } = req.body; // no checkInDate from client
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       session.endSession();
@@ -199,12 +192,11 @@ const updateBooking = async (req, res, next) => {
         .json({ success: false, message: "Invalid booking ID format" });
     }
 
-    if (!guestName && !nights && !checkInDate) {
+    if (!guestName && !nights) {
       session.endSession();
       return res.status(400).json({
         success: false,
-        message:
-          "At least one field (guestName, nights, or checkInDate) must be provided",
+        message: "At least one field (guestName or nights) must be provided",
       });
     }
 
@@ -213,19 +205,6 @@ const updateBooking = async (req, res, next) => {
       return res
         .status(400)
         .json({ success: false, message: "At least 1 night must be booked" });
-    }
-
-    if (checkInDate) {
-      const checkIn = new Date(checkInDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // ignore time
-      if (checkIn < today) {
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Check-in date cannot be in the past",
-        });
-      }
     }
 
     await session.startTransaction();
@@ -239,9 +218,9 @@ const updateBooking = async (req, res, next) => {
         .json({ success: false, message: "Booking not found" });
     }
 
+    // Update only allowed fields
     if (guestName !== undefined) booking.guestName = guestName.trim();
     if (nights !== undefined) booking.nights = nights;
-    if (checkInDate !== undefined) booking.checkInDate = new Date(checkInDate);
 
     await booking.save({ session });
     await session.commitTransaction();
