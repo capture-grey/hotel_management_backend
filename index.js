@@ -16,7 +16,12 @@ const connectDB = require("./config/db.js");
 
 const authRouter = require("./router/authRouter");
 const roomRouter = require("./router/roomRouter");
+const bookingRouter = require("./router/bookingRouter");
+
+//create express app
 const app = express();
+
+//process.env
 dotenv.config();
 
 // database connection
@@ -33,6 +38,7 @@ app.get("/", (req, res) => {
 
 app.use("/api/auth", authRouter);
 app.use("/api/rooms", roomRouter);
+app.use("/api/bookings", bookingRouter);
 
 // 404 not found handler
 app.use(notFoundHandler);
