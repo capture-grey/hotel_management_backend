@@ -3,17 +3,13 @@ const BookingHistory = require("../models/BookingHistory");
 
 // Get booking history with simple analytics
 const getBookingHistory = async (req, res, next) => {
-  const session = await mongoose.startSession();
-
   try {
     const { page = 1, limit = 10 } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    await session.startTransaction();
-
     // Get analytics (total revenue, total bookings, average stay)
-    const analyticsPipeline = [
+    const analyticsResult = await BookingHistory.aggregate([
       {
         $group: {
           _id: null,
@@ -22,29 +18,17 @@ const getBookingHistory = async (req, res, next) => {
           averageStayDuration: { $avg: "$actualNightsStayed" },
         },
       },
-    ];
+    ]);
 
     // Get paginated history
-    const paginationPipeline = [
-      { $sort: { checkOutDate: -1 } },
-      { $skip: skip },
-      { $limit: parseInt(limit) },
-    ];
+    const paginatedHistory = await BookingHistory.find()
+      .sort({ checkOutDate: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
     // Get total count
-    const countPipeline = [{ $count: "total" }];
+    const total = await BookingHistory.countDocuments();
 
-    const [analyticsResult, paginatedHistory, totalCountResult] =
-      await Promise.all([
-        BookingHistory.aggregate(analyticsPipeline).session(session),
-        BookingHistory.aggregate(paginationPipeline).session(session),
-        BookingHistory.aggregate(countPipeline).session(session),
-      ]);
-
-    await session.commitTransaction();
-    session.endSession();
-
-    const total = totalCountResult[0]?.total || 0;
     const analytics = analyticsResult[0] || {};
 
     res.status(200).json({
@@ -63,9 +47,13 @@ const getBookingHistory = async (req, res, next) => {
       },
     });
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    next(error);
+    console.error("Booking history error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 
