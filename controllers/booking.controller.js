@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Room = require("../models/Room");
 const Booking = require("../models/Booking");
+const BookingHistory = require("../models/BookingHistory");
 
 // Create a new booking
 const createBooking = async (req, res, next) => {
@@ -140,44 +141,6 @@ const getBookings = async (req, res, next) => {
   }
 };
 
-// Get booking by ID
-const getBooking = async (req, res, next) => {
-  const session = await mongoose.startSession();
-  try {
-    const { id } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid booking ID format" });
-    }
-
-    await session.startTransaction();
-
-    const booking = await Booking.findById(id)
-      .populate("roomId", "roomNo type beds pricePerNight")
-      .session(session);
-
-    if (!booking) {
-      await session.abortTransaction();
-      session.endSession();
-      return res
-        .status(404)
-        .json({ success: false, message: "Booking not found" });
-    }
-
-    await session.commitTransaction();
-    session.endSession();
-
-    res.status(200).json({ success: true, data: booking });
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    next(error);
-  }
-};
-
 // Update booking
 const updateBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -297,64 +260,179 @@ const deleteBooking = async (req, res, next) => {
   }
 };
 
-// Get booking summary (aggregated)
-const getBookingSummary = async (req, res, next) => {
+// Checkout booking - Move to history and free up the room
+const checkoutBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
-  try {
-    await session.startTransaction();
 
-    const summary = await Booking.aggregate([
-      {
-        $lookup: {
-          from: "rooms",
-          localField: "roomId",
-          foreignField: "_id",
-          as: "room",
+  try {
+    const { id } = req.params;
+
+    // No request body expected - always use current date for checkout
+    console.log(`Checkout request for booking ID: ${id}`);
+    console.log(`Using current date for checkout`);
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID format",
+      });
+    }
+
+    await session.startTransaction();
+    console.log("Transaction started");
+
+    // Get the booking with room details
+    const booking = await Booking.findById(id)
+      .populate("roomId", "roomNo type pricePerNight")
+      .session(session);
+
+    console.log("Booking found:", booking ? booking._id : "Not found");
+
+    if (!booking) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    const room = booking.roomId;
+    console.log("Room details:", room);
+
+    // Calculate actual stay duration using current date
+    const plannedCheckOutDate = new Date(booking.checkInDate);
+    plannedCheckOutDate.setDate(plannedCheckOutDate.getDate() + booking.nights);
+
+    const checkOutDate = new Date(); // Always use current date/time
+    const actualNightsStayed = Math.max(
+      1,
+      Math.ceil((checkOutDate - booking.checkInDate) / (1000 * 60 * 60 * 24))
+    );
+
+    console.log(
+      `Planned nights: ${booking.nights}, Actual nights: ${actualNightsStayed}`
+    );
+
+    // Calculate amounts
+    const plannedTotalAmount = booking.nights * room.pricePerNight;
+    const actualTotalAmount = actualNightsStayed * room.pricePerNight;
+
+    // Determine status based on stay duration
+    let status = "completed";
+    if (actualNightsStayed < booking.nights) {
+      status = "early_checkout";
+    } else if (actualNightsStayed > booking.nights) {
+      status = "extended_stay";
+    }
+
+    console.log(
+      `Status: ${status}, Planned amount: ${plannedTotalAmount}, Actual amount: ${actualTotalAmount}`
+    );
+
+    // Create history record
+    const historyRecord = await BookingHistory.create(
+      [
+        {
+          roomId: room._id,
+          guestName: booking.guestName,
+          roomNo: room.roomNo,
+          roomType: room.type,
+          checkInDate: booking.checkInDate,
+          checkOutDate: checkOutDate,
+          nights: booking.nights,
+          pricePerNight: room.pricePerNight,
+          totalAmount: plannedTotalAmount,
+          actualNightsStayed: actualNightsStayed,
+          actualTotalAmount: actualTotalAmount,
+          status: status,
         },
-      },
-      { $unwind: "$room" },
-      {
-        $group: {
-          _id: "$roomId",
-          roomNo: { $first: "$room.roomNo" },
-          type: { $first: "$room.type" },
-          totalNightsBooked: { $sum: "$nights" },
-          totalBookings: { $sum: 1 },
-          totalRevenue: {
-            $sum: { $multiply: ["$nights", "$room.pricePerNight"] },
-          },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          roomId: "$_id",
-          roomNo: 1,
-          type: 1,
-          totalNightsBooked: 1,
-          totalBookings: 1,
-          totalRevenue: 1,
-        },
-      },
-      { $sort: { roomNo: 1 } },
-    ]).session(session);
+      ],
+      { session }
+    );
+
+    console.log("History record created:", historyRecord[0]._id);
+
+    // Make room available again
+    await Room.findByIdAndUpdate(room._id, { available: true }, { session });
+
+    console.log("Room marked as available:", room._id);
+
+    // Remove from active bookings
+    await Booking.findByIdAndDelete(id).session(session);
+    console.log("Booking deleted:", id);
 
     await session.commitTransaction();
     session.endSession();
+    console.log("Transaction committed successfully");
 
-    res.status(200).json({ success: true, data: summary });
+    res.status(200).json({
+      success: true,
+      message: "Booking checked out successfully",
+      data: {
+        history: historyRecord[0],
+        billing: {
+          plannedNights: booking.nights,
+          plannedAmount: plannedTotalAmount,
+          actualNights: actualNightsStayed,
+          actualAmount: actualTotalAmount,
+          status: status,
+          roomNo: room.roomNo,
+          guestName: booking.guestName,
+        },
+      },
+    });
   } catch (error) {
-    await session.abortTransaction();
+    console.error("Checkout error details:", error);
+
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+      console.log("Transaction aborted");
+    }
+
     session.endSession();
-    next(error);
+
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: Object.values(error.errors)
+          .map((err) => err.message)
+          .join(", "),
+      });
+    }
+
+    // More specific error handling
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID format",
+      });
+    }
+
+    // Check for specific MongoDB transaction errors
+    if (
+      error.errorLabels &&
+      error.errorLabels.includes("TransientTransactionError")
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "Transaction error. Please try again.",
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during checkout",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 
 module.exports = {
   createBooking,
   getBookings,
-  getBooking,
   updateBooking,
   deleteBooking,
-  getBookingSummary,
+  checkoutBooking,
 };
