@@ -22,6 +22,6 @@ router.post("/", createRoom);
 router.put("/:id", updateRoom);
 
 // DELETE a room by ID
-router.post("/:id", deleteRoom);
+router.delete("/:id", deleteRoom);
 
 module.exports = router;

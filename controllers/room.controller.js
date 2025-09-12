@@ -156,16 +156,8 @@ const updateRoom = async (req, res, next) => {
 
   try {
     const { id } = req.params;
-    const {
-      roomNo,
-      type,
-      beds,
-      pricePerNight,
-      description,
-      available,
-      forceUpdate,
-      checkoutBooking: shouldCheckout,
-    } = req.body;
+    const { roomNo, type, beds, pricePerNight, description, available } =
+      req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       session.endSession();
@@ -201,68 +193,30 @@ const updateRoom = async (req, res, next) => {
       }
     }
 
-    // Check if trying to make room available while it has active bookings
-    if (available === true && room.available === false) {
-      const activeBookings = await Booking.findOne({
-        roomId: id,
-        checkInDate: { $lte: new Date() },
-        $expr: {
-          $lt: [
-            "$nights",
+    // Check if trying to make room available while it has a current booking
+    if (available === true && room.available === false && room.currentBooking) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({
+        success: false,
+        message: "Room has an active booking",
+        data: {
+          requiresAction: true,
+          bookingId: room.currentBooking.toString(),
+          options: [
             {
-              $ceil: {
-                $divide: [
-                  { $subtract: [new Date(), "$checkInDate"] },
-                  1000 * 60 * 60 * 24,
-                ],
-              },
+              action: "checkout",
+              label: "Checkout current booking",
+              description: "Checkout the guest and free up the room",
+            },
+            {
+              action: "delete",
+              label: "Delete booking",
+              description: "Delete the booking without checkout",
             },
           ],
         },
-      })
-        .populate("guestName", "name")
-        .session(session);
-
-      if (activeBookings && !forceUpdate) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(409).json({
-          success: false,
-          message: "Room has active bookings",
-          data: {
-            requiresAction: true,
-            bookingDetails: {
-              guestName: activeBookings.guestName,
-              bookingId: activeBookings._id,
-              checkInDate: activeBookings.checkInDate,
-              nights: activeBookings.nights,
-            },
-            options: [
-              {
-                action: "checkout",
-                label: "Checkout current booking",
-                description: `Checkout guest ${activeBookings.guestName} and free up the room`,
-              },
-              {
-                action: "delete",
-                label: "Delete booking",
-                description: `Delete the booking for guest ${activeBookings.guestName}`,
-              },
-            ],
-          },
-        });
-      }
-
-      // If forceUpdate is true and we have a specific action to take
-      if (activeBookings && forceUpdate) {
-        if (shouldCheckout === true) {
-          // Checkout the booking
-          await checkoutBookingInternal(activeBookings._id, session);
-        } else {
-          // Delete the booking
-          await deleteBookingInternal(activeBookings._id, session);
-        }
-      }
+      });
     }
 
     // Update fields
@@ -295,7 +249,6 @@ const deleteRoom = async (req, res, next) => {
 
   try {
     const { id } = req.params;
-    const { forceDelete, checkoutBooking: shouldCheckout } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       session.endSession();
@@ -318,66 +271,30 @@ const deleteRoom = async (req, res, next) => {
       });
     }
 
-    // Check if room has active bookings
-    const activeBookings = await Booking.findOne({
-      roomId: id,
-      checkInDate: { $lte: new Date() },
-      $expr: {
-        $lt: [
-          "$nights",
-          {
-            $ceil: {
-              $divide: [
-                { $subtract: [new Date(), "$checkInDate"] },
-                1000 * 60 * 60 * 24,
-              ],
-            },
-          },
-        ],
-      },
-    })
-      .populate("guestName", "name")
-      .session(session);
-
-    if (activeBookings && !forceDelete) {
+    // Check if room has a current booking
+    if (room.currentBooking) {
       await session.abortTransaction();
       session.endSession();
       return res.status(409).json({
         success: false,
-        message: "Room has active bookings",
+        message: "Room has an active booking",
         data: {
           requiresAction: true,
-          bookingDetails: {
-            guestName: activeBookings.guestName,
-            bookingId: activeBookings._id,
-            checkInDate: activeBookings.checkInDate,
-            nights: activeBookings.nights,
-          },
+          bookingId: room.currentBooking.toString(),
           options: [
             {
               action: "checkout",
               label: "Checkout current booking",
-              description: `Checkout guest ${activeBookings.guestName} and free up the room`,
+              description: "Checkout the guest and free up the room",
             },
             {
               action: "delete",
               label: "Delete booking",
-              description: `Delete the booking for guest ${activeBookings.guestName}`,
+              description: "Delete the booking without checkout",
             },
           ],
         },
       });
-    }
-
-    // If forceDelete is true and we have a specific action to take
-    if (activeBookings && forceDelete) {
-      if (shouldCheckout === true) {
-        // Checkout the booking
-        await checkoutBookingInternal(activeBookings._id, session);
-      } else {
-        // Delete the booking
-        await deleteBookingInternal(activeBookings._id, session);
-      }
     }
 
     await Room.findByIdAndDelete(id).session(session);
@@ -393,80 +310,6 @@ const deleteRoom = async (req, res, next) => {
     session.endSession();
     next(error);
   }
-};
-
-// Helper function to checkout a booking (internal use)
-const checkoutBookingInternal = async (bookingId, session) => {
-  const booking = await Booking.findById(bookingId)
-    .populate("roomId", "roomNo type pricePerNight")
-    .session(session);
-
-  if (!booking) {
-    throw new Error("Booking not found");
-  }
-
-  const room = booking.roomId;
-  const checkOutDate = new Date();
-  const actualNightsStayed = Math.max(
-    1,
-    Math.ceil((checkOutDate - booking.checkInDate) / (1000 * 60 * 60 * 24))
-  );
-
-  // Calculate amounts
-  const plannedTotalAmount = booking.nights * room.pricePerNight;
-  const actualTotalAmount = actualNightsStayed * room.pricePerNight;
-
-  // Determine status based on stay duration
-  let status = "completed";
-  if (actualNightsStayed < booking.nights) {
-    status = "early_checkout";
-  } else if (actualNightsStayed > booking.nights) {
-    status = "extended_stay";
-  }
-
-  // Create history record
-  await BookingHistory.create(
-    [
-      {
-        roomId: room._id,
-        guestName: booking.guestName,
-        roomNo: room.roomNo,
-        roomType: room.type,
-        checkInDate: booking.checkInDate,
-        checkOutDate: checkOutDate,
-        nights: booking.nights,
-        pricePerNight: room.pricePerNight,
-        totalAmount: plannedTotalAmount,
-        actualNightsStayed: actualNightsStayed,
-        actualTotalAmount: actualTotalAmount,
-        status: status,
-      },
-    ],
-    { session }
-  );
-
-  // Make room available again
-  await Room.findByIdAndUpdate(room._id, { available: true }, { session });
-
-  // Remove from active bookings
-  await Booking.findByIdAndDelete(bookingId).session(session);
-};
-
-// Helper function to delete a booking (internal use)
-const deleteBookingInternal = async (bookingId, session) => {
-  const booking = await Booking.findById(bookingId).session(session);
-
-  if (!booking) {
-    throw new Error("Booking not found");
-  }
-
-  await Room.findByIdAndUpdate(
-    booking.roomId,
-    { available: true },
-    { session }
-  );
-
-  await Booking.findByIdAndDelete(bookingId).session(session);
 };
 
 // Export all controllers
