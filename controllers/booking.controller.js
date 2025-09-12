@@ -33,7 +33,6 @@ const createBooking = async (req, res, next) => {
       });
     }
 
-    // Always set check-in date to today
     const today = new Date();
     today.setHours(0, 0, 0, 0); // ignore time
     const checkIn = today;
@@ -49,12 +48,34 @@ const createBooking = async (req, res, next) => {
         .json({ success: false, message: "Room not found" });
     }
 
-    if (!room.available) {
+    // Check if room is already booked (using both available flag and currentBooking)
+    if (!room.available || room.currentBooking) {
       await session.abortTransaction();
       session.endSession();
-      return res
-        .status(400)
-        .json({ success: false, message: "Room is not available" });
+
+      let bookingDetails = null;
+      if (room.currentBooking) {
+        bookingDetails = await Booking.findById(room.currentBooking);
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: "Room is already booked",
+        requiresAction: true,
+        bookingDetails: bookingDetails,
+        options: [
+          {
+            action: "checkout",
+            label: "Checkout current guest",
+            description: "Force checkout existing booking",
+          },
+          {
+            action: "cancel",
+            label: "Cancel",
+            description: "Do not create new booking",
+          },
+        ],
+      });
     }
 
     const booking = await Booking.create(
@@ -69,7 +90,9 @@ const createBooking = async (req, res, next) => {
       { session }
     );
 
+    // Update room status and set current booking reference
     room.available = false;
+    room.currentBooking = booking[0]._id;
     await room.save({ session });
 
     await session.commitTransaction();
@@ -88,13 +111,56 @@ const createBooking = async (req, res, next) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    next(error);
+  }
+};
 
-    if (error.name === "ValidationError") {
+// Get single booking by ID
+const getBooking = async (req, res, next) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      session.endSession();
       return res.status(400).json({
         success: false,
-        message: Object.values(error.errors)
-          .map((err) => err.message)
-          .join(", "),
+        message: "Invalid booking ID format",
+      });
+    }
+
+    await session.startTransaction();
+
+    const booking = await Booking.findById(id)
+      .populate("roomId", "roomNo type beds pricePerNight available")
+      .session(session);
+
+    if (!booking) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      success: true,
+      data: booking,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    // More specific error handling
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID",
       });
     }
 
@@ -216,7 +282,6 @@ const updateBooking = async (req, res, next) => {
   }
 };
 
-// Delete booking
 const deleteBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
@@ -240,11 +305,26 @@ const deleteBooking = async (req, res, next) => {
         .json({ success: false, message: "Booking not found" });
     }
 
-    await Room.findByIdAndUpdate(
+    // Remove currentBooking reference from Room and mark as available
+    const roomUpdateResult = await Room.findByIdAndUpdate(
       booking.roomId,
-      { available: true },
-      { session }
+      {
+        available: true,
+        currentBooking: null,
+      },
+      { session, new: false } // Return the original document
     );
+
+    // Verify room was found and updated
+    if (!roomUpdateResult) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Associated room not found",
+      });
+    }
+
     await Booking.findByIdAndDelete(id).session(session);
 
     await session.commitTransaction();
@@ -260,64 +340,53 @@ const deleteBooking = async (req, res, next) => {
   }
 };
 
-// Checkout booking - Move to history and free up the room
+// Checkout booking
 const checkoutBooking = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
     const { id } = req.params;
 
-    // No request body expected - always use current date for checkout
-    console.log(`Checkout request for booking ID: ${id}`);
-    console.log(`Using current date for checkout`);
-
     if (!mongoose.Types.ObjectId.isValid(id)) {
       session.endSession();
-      return res.status(400).json({
-        success: false,
-        message: "Invalid booking ID format",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid booking ID format" });
     }
 
     await session.startTransaction();
-    console.log("Transaction started");
 
-    // Get the booking with room details
     const booking = await Booking.findById(id)
-      .populate("roomId", "roomNo type pricePerNight")
+      .populate("roomId", "roomNo type beds pricePerNight")
       .session(session);
-
-    console.log("Booking found:", booking ? booking._id : "Not found");
 
     if (!booking) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({
-        success: false,
-        message: "Booking not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Booking not found" });
     }
 
     const room = booking.roomId;
-    console.log("Room details:", room);
 
-    // Calculate actual stay duration using current date
-    const plannedCheckOutDate = new Date(booking.checkInDate);
-    plannedCheckOutDate.setDate(plannedCheckOutDate.getDate() + booking.nights);
+    // Additional check to ensure room exists
+    if (!room) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Associated room not found",
+      });
+    }
 
-    const checkOutDate = new Date(); // Always use current date/time
+    const checkOutDate = new Date();
     const actualNightsStayed = Math.max(
       1,
       Math.ceil((checkOutDate - booking.checkInDate) / (1000 * 60 * 60 * 24))
     );
 
-    console.log(
-      `Planned nights: ${booking.nights}, Actual nights: ${actualNightsStayed}`
-    );
-
-    // Calculate amounts
-    const plannedTotalAmount = booking.nights * room.pricePerNight;
-    const actualTotalAmount = actualNightsStayed * room.pricePerNight;
+    const totalAmount = actualNightsStayed * room.pricePerNight;
 
     // Determine status based on stay duration
     let status = "completed";
@@ -327,11 +396,7 @@ const checkoutBooking = async (req, res, next) => {
       status = "extended_stay";
     }
 
-    console.log(
-      `Status: ${status}, Planned amount: ${plannedTotalAmount}, Actual amount: ${actualTotalAmount}`
-    );
-
-    // Create history record
+    // Save history
     const historyRecord = await BookingHistory.create(
       [
         {
@@ -340,32 +405,43 @@ const checkoutBooking = async (req, res, next) => {
           roomNo: room.roomNo,
           roomType: room.type,
           checkInDate: booking.checkInDate,
-          checkOutDate: checkOutDate,
+          checkOutDate,
           nights: booking.nights,
           pricePerNight: room.pricePerNight,
-          totalAmount: plannedTotalAmount,
-          actualNightsStayed: actualNightsStayed,
-          actualTotalAmount: actualTotalAmount,
+          totalAmount: booking.nights * room.pricePerNight, // Planned amount
+          actualNightsStayed,
+          actualTotalAmount: totalAmount, // Actual amount charged
           status: status,
         },
       ],
       { session }
     );
 
-    console.log("History record created:", historyRecord[0]._id);
+    // Free room and remove currentBooking reference
+    const roomUpdateResult = await Room.findByIdAndUpdate(
+      room._id,
+      {
+        available: true,
+        currentBooking: null,
+      },
+      { session, new: false } // Return the original document
+    );
 
-    // Make room available again
-    await Room.findByIdAndUpdate(room._id, { available: true }, { session });
+    // Verify room was updated
+    if (!roomUpdateResult) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: "Room not found for update",
+      });
+    }
 
-    console.log("Room marked as available:", room._id);
-
-    // Remove from active bookings
+    // Remove booking
     await Booking.findByIdAndDelete(id).session(session);
-    console.log("Booking deleted:", id);
 
     await session.commitTransaction();
     session.endSession();
-    console.log("Transaction committed successfully");
 
     res.status(200).json({
       success: true,
@@ -374,9 +450,9 @@ const checkoutBooking = async (req, res, next) => {
         history: historyRecord[0],
         billing: {
           plannedNights: booking.nights,
-          plannedAmount: plannedTotalAmount,
+          plannedAmount: booking.nights * room.pricePerNight,
           actualNights: actualNightsStayed,
-          actualAmount: actualTotalAmount,
+          actualAmount: totalAmount,
           status: status,
           roomNo: room.roomNo,
           guestName: booking.guestName,
@@ -384,25 +460,10 @@ const checkoutBooking = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("Checkout error details:", error);
-
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-      console.log("Transaction aborted");
-    }
-
+    await session.abortTransaction();
     session.endSession();
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({
-        success: false,
-        message: Object.values(error.errors)
-          .map((err) => err.message)
-          .join(", "),
-      });
-    }
-
-    // More specific error handling
+    // Enhanced error handling
     if (error.name === "CastError") {
       return res.status(400).json({
         success: false,
@@ -410,27 +471,13 @@ const checkoutBooking = async (req, res, next) => {
       });
     }
 
-    // Check for specific MongoDB transaction errors
-    if (
-      error.errorLabels &&
-      error.errorLabels.includes("TransientTransactionError")
-    ) {
-      return res.status(500).json({
-        success: false,
-        message: "Transaction error. Please try again.",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "Internal server error during checkout",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
+    next(error);
   }
 };
 
 module.exports = {
   createBooking,
+  getBooking,
   getBookings,
   updateBooking,
   deleteBooking,

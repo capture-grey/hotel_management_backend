@@ -31,10 +31,13 @@ const roomSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    currentBooking: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Booking",
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
-const Room = mongoose.model("Room", roomSchema);
-
-module.exports = Room;
+module.exports = mongoose.models.Room || mongoose.model("Room", roomSchema);
