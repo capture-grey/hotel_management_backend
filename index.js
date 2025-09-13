@@ -34,6 +34,21 @@ app.use(
   })
 );
 
+const corsOptions = {
+  origin: [
+    "http://localhost:5173",
+    "https://hotel-management-frontend-fawn.vercel.app",
+  ],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+
+// make sure preflight OPTIONS always works
+app.options("*", cors(corsOptions));
+
 // parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
