@@ -12,6 +12,7 @@ const {
   errorHandler,
 } = require("./middlewares/error.middleware");
 
+const app = express();
 dotenv.config();
 connectDB();
 
@@ -25,16 +26,11 @@ app.use(
   })
 );
 
-const app = express();
-
-// app.use(cors()); // allow all origins
-// app.options("*", cors());
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => {
-  res.json({ message: "Hello from Hotel Management API" });
+  res.json({ message: "Hello from Hotel Management" });
 });
 
 app.use("/api/auth", authRouter);
@@ -45,4 +41,3 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 module.exports = app;
-module.exports.handler = serverless(app);
