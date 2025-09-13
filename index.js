@@ -15,6 +15,16 @@ const {
 dotenv.config();
 connectDB();
 
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://hotel-management-frontend-fawn.vercel.app",
+      "https://hotel-management-frontend-git-main-rorshachs-projects-9fee91c2.vercel.app",
+    ],
+  })
+);
+
 const app = express();
 
 // app.use(cors()); // allow all origins
