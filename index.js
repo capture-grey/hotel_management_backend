@@ -17,8 +17,8 @@ connectDB();
 
 const app = express();
 
-app.use(cors()); // allow all origins
-app.options("*", cors());
+// app.use(cors()); // allow all origins
+// app.options("*", cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -34,4 +34,5 @@ app.use("/api/bookings", bookingRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+module.exports = app;
 module.exports.handler = serverless(app);
