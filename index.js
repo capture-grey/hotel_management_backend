@@ -27,7 +27,10 @@ connectDB();
 //cors allowed urls
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: [
+      "http://localhost:5173",
+      "https://hotel-management-frontend-fawn.vercel.app",
+    ],
   })
 );
 
@@ -48,9 +51,9 @@ app.use("/api/bookings", bookingRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-app.listen(process.env.PORT, () => {
-  console.log(`app listening to port ${process.env.PORT}`);
-});
+// app.listen(process.env.PORT, () => {
+//   console.log(`app listening to port ${process.env.PORT}`);
+// });
 
 // export for vercel
 module.exports = app;
