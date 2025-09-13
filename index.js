@@ -24,38 +24,44 @@ const app = express();
 dotenv.config();
 connectDB();
 
-//cors allowed urls
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "https://hotel-management-frontend-fawn.vercel.app",
-    ],
-  })
-);
+// CORS configuration
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://hotel-management-frontend-fawn.vercel.app",
+  "https://hotel-management-frontend-fawn.vercel.app/", // Add with and without trailing slash
+];
 
 const corsOptions = {
-  origin: [
-    "http://localhost:5173",
-    "https://hotel-management-frontend-fawn.vercel.app",
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
   credentials: true,
+  optionsSuccessStatus: 200, // Some legacy browsers choke on 204
 };
 
+// Apply CORS middleware before routes
 app.use(cors(corsOptions));
 
-// make sure preflight OPTIONS always works
+// Handle preflight requests for all routes
 app.options("*", cors(corsOptions));
 
 // parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // routes
 app.get("/", (req, res) => {
-  res.status(200).json({ message: "Hello From Octobill" });
+  res.status(200).json({ message: "Hello From Hotel Management API" });
 });
 
 app.use("/api/auth", authRouter);
@@ -65,10 +71,6 @@ app.use("/api/bookings", bookingRouter);
 // error handlers
 app.use(notFoundHandler);
 app.use(errorHandler);
-
-// app.listen(process.env.PORT, () => {
-//   console.log(`app listening to port ${process.env.PORT}`);
-// });
 
 // export for vercel
 module.exports = app;
