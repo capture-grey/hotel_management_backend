@@ -271,33 +271,51 @@ const deleteRoom = async (req, res, next) => {
       });
     }
 
-    // Check if room has a current booking
+    // Check if room has a current booking reference
     if (room.currentBooking) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(409).json({
-        success: false,
-        message: "Room has an active booking",
-        data: {
-          requiresAction: true,
-          bookingId: room.currentBooking.toString(),
-          options: [
-            {
-              action: "checkout",
-              label: "Checkout current booking",
-              description: "Checkout the guest and free up the room",
-            },
-            {
-              action: "delete",
-              label: "Delete booking",
-              description: "Delete the booking without checkout",
-            },
-          ],
-        },
-      });
+      // Verify the booking actually exists
+      const existingBooking = await Booking.findById(
+        room.currentBooking
+      ).session(session);
+
+      if (!existingBooking) {
+        // Stale reference - clear it and proceed with deletion
+        console.warn(
+          `Stale booking reference ${room.currentBooking} found in room ${room.roomNo}. Clearing reference.`
+        );
+        room.currentBooking = null;
+        await room.save({ session });
+        // Continue with deletion below
+      } else {
+        // Valid booking exists - return conflict
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({
+          success: false,
+          message: "Room has an active booking",
+          data: {
+            requiresAction: true,
+            bookingId: room.currentBooking.toString(),
+            options: [
+              {
+                action: "checkout",
+                label: "Checkout current booking",
+                description: "Checkout the guest and free up the room",
+              },
+              {
+                action: "delete",
+                label: "Delete booking",
+                description: "Delete the booking without checkout",
+              },
+            ],
+          },
+        });
+      }
     }
 
+    // Delete the room
     await Room.findByIdAndDelete(id).session(session);
+
     await session.commitTransaction();
     session.endSession();
 
@@ -308,6 +326,16 @@ const deleteRoom = async (req, res, next) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+
+    // Enhanced error handling
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid room ID format",
+      });
+    }
+
+    console.error("Delete room error:", error);
     next(error);
   }
 };
