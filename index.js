@@ -4,6 +4,7 @@ const dotenv = require("dotenv");
 const mongoose = require("mongoose");
 const cookieParser = require("cookie-parser");
 const serverless = require("serverless-http");
+const cors = require("cors");
 
 // internal imports
 const {
@@ -23,6 +24,13 @@ const app = express();
 dotenv.config();
 connectDB();
 
+//cors allowed urls
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+  })
+);
+
 // parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -40,10 +48,10 @@ app.use("/api/bookings", bookingRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+app.listen(process.env.PORT, () => {
+  console.log(`app listening to port ${process.env.PORT}`);
+});
+
 // export for vercel
 module.exports = app;
 module.exports.handler = serverless(app);
-
-// app.listen(process.env.PORT, () => {
-//   console.log(`app listening to port ${process.env.PORT}`);
-// });
