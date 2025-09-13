@@ -25,28 +25,8 @@ dotenv.config();
 connectDB();
 
 // CORS configuration
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://hotel-management-frontend-fawn.vercel.app",
-  "https://hotel-management-frontend-fawn.vercel.app/", // Add with and without trailing slash
-];
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, postman)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-  credentials: true,
-  optionsSuccessStatus: 200, // Some legacy browsers choke on 204
-};
+app.use(cors()); // allows ALL origins
+app.options("*", cors()); // handles preflight for ALL
 
 // Apply CORS middleware before routes
 app.use(cors(corsOptions));
